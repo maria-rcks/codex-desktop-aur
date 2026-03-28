@@ -37,7 +37,7 @@ jobs:
       - name: Install tooling
         run: |
           set -euo pipefail
-          pacman -Sy --noconfirm --needed git openssh rsync curl p7zip node-gyp github-cli jq python
+          pacman -Sy --noconfirm --needed git openssh rsync curl p7zip node-gyp npm github-cli jq python
 
       - name: Validate repository layout
         run: |
@@ -47,6 +47,7 @@ jobs:
           test -f codex-icon.png
           test -x scripts/check_upstream.sh
           test -x scripts/build_prepatched_bundle.sh
+          test -f scripts/patch_codex_main.js
           test -x scripts/update_pkgbuild.sh
           test -x scripts/build_and_release.sh
           test -x scripts/publish_aur.sh

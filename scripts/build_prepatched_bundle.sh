@@ -8,6 +8,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-.}"
 PKGBUILD_PATH="${PKGBUILD_PATH:-PKGBUILD}"
 PKGVER_CANDIDATE="${PKGVER_CANDIDATE:-}"
 CODEX_ELECTRON_TARGET="${CODEX_ELECTRON_TARGET:-}"
+PATCH_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patch_codex_main.js"
 
 NODE_PTY_VER="1.1.0"
 BETTER_SQLITE3_VER="12.4.6"
@@ -21,6 +22,11 @@ fi
 
 if [[ ! -f "$PKGBUILD_PATH" ]]; then
   echo "Missing PKGBUILD at $PKGBUILD_PATH" >&2
+  exit 1
+fi
+
+if [[ ! -f "$PATCH_SCRIPT" ]]; then
+  echo "Missing patch script at $PATCH_SCRIPT" >&2
   exit 1
 fi
 
@@ -49,20 +55,6 @@ download_if_missing() {
   mv "$tmp" "$out"
 }
 
-count_occurrences() {
-  local needle="$1"
-  local file="$2"
-  local count
-  count="$(LC_ALL=C grep -aobF -- "$needle" "$file" 2>/dev/null | wc -l || true)"
-  printf '%s' "${count:-0}"
-}
-
-first_offset() {
-  local needle="$1"
-  local file="$2"
-  LC_ALL=C grep -aobF -- "$needle" "$file" 2>/dev/null | cut -d: -f1 | head -n1 || true
-}
-
 download_if_missing "$UPSTREAM_URL" "$DMG_PATH"
 
 upstream_sha256="$(sha256sum "$DMG_PATH" | awk '{print $1}')"
@@ -89,51 +81,20 @@ install -Dm644 "$codex_resources/app.asar" "$payload_root/resources/app.asar"
 cp -a "$codex_resources/app.asar.unpacked" "$payload_root/resources/"
 
 asar_path="$payload_root/resources/app.asar"
-patched_menu_bar=0
+asar_unpack_dir="$WORK_DIR/app.asar-extracted"
+npm_cache_dir="$WORK_DIR/.npm-cache"
+asar_cli=(npx --yes "@electron/asar@4.0.1")
 
-hard_old='S.removeMenu()'
-hard_new='S.on("show",N)'
-hard_old_hits="$(count_occurrences "$hard_old" "$asar_path")"
-hard_new_hits="$(count_occurrences "$hard_new" "$asar_path")"
+rm -rf "$asar_unpack_dir"
+mkdir -p "$npm_cache_dir"
 
-if [[ "$hard_old_hits" -eq 1 && "$hard_new_hits" -eq 0 ]]; then
-  hard_off="$(first_offset "$hard_old" "$asar_path")"
-  printf '%s' "$hard_new" | dd of="$asar_path" bs=1 seek="$hard_off" conv=notrunc status=none
+NPM_CONFIG_CACHE="$npm_cache_dir" "${asar_cli[@]}" extract "$asar_path" "$asar_unpack_dir"
+if ! node "$PATCH_SCRIPT" "$asar_unpack_dir"; then
+  echo "WARNING: semantic patch step failed; repacking bundle with extracted app.asar contents." >&2
 fi
-
-for old in \
-  'S.isDestroyed()||S.setTitle(S.getTitle())' \
-  'E.isDestroyed()||E.setTitle(E.getTitle())'
-do
-  if [[ "$old" == S* ]]; then
-    new='S.isDestroyed()||S.setAutoHideMenuBar(!0)'
-  else
-    new='E.isDestroyed()||E.setAutoHideMenuBar(!0)'
-  fi
-
-  if [[ ${#old} -ne ${#new} ]]; then
-    continue
-  fi
-
-  old_hits="$(count_occurrences "$old" "$asar_path")"
-  new_hits="$(count_occurrences "$new" "$asar_path")"
-
-  if [[ "$old_hits" -eq 1 ]]; then
-    patch_off="$(first_offset "$old" "$asar_path")"
-    printf '%s' "$new" | dd of="$asar_path" bs=1 seek="$patch_off" conv=notrunc status=none
-    patched_menu_bar=1
-    break
-  fi
-
-  if [[ "$old_hits" -eq 0 && "$new_hits" -eq 1 ]]; then
-    patched_menu_bar=1
-    break
-  fi
-done
-
-if [[ "$patched_menu_bar" -eq 0 ]]; then
-  echo "WARNING: Menu-bar patch anchor not found; shipping upstream app.asar unchanged." >&2
-fi
+rm -f "$asar_path"
+NPM_CONFIG_CACHE="$npm_cache_dir" "${asar_cli[@]}" pack --unpack-dir 'node_modules' "$asar_unpack_dir" "$asar_path"
+rm -rf "$asar_unpack_dir"
 
 download_if_missing "https://registry.npmjs.org/node-pty/-/node-pty-${NODE_PTY_VER}.tgz" "node-pty-${NODE_PTY_VER}.tgz"
 download_if_missing "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-${BETTER_SQLITE3_VER}.tgz" "better-sqlite3-${BETTER_SQLITE3_VER}.tgz"
